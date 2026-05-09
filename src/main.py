@@ -25,9 +25,9 @@ with open("cookies.json") as f:
 
 s = 0
 
-async def get_pdf_content(page, date, disk_client, session):
+async def get_pdf_content(page, date: str, disk_client: YandexDiskClient, session: aiohttp.ClientSession):
     # you can slightly change the url here in order to process other types of publisher's newspapers
-    await page.goto(f"https://e-avis.aftenposten.no/search?title=611&from={date}&to={date}")
+    await page.goto(f"https://e-avis.aftenposten.no/search?title=7545,7549,991,7547,9349,9351,9355,9357&from={date}&to={date}")
     locator = page.locator("div div div div div a")
 
     while True:
@@ -43,19 +43,25 @@ async def get_pdf_content(page, date, disk_client, session):
         return
     
     links = await locator.element_handles()
-    newspaper_link = links[-1]
-    href = await newspaper_link.get_attribute("href")
-    ns_id = href.split("/")[-1] # unique article identificator used for getting a request token
-    
-    async with session.get(token_checker.format(ns_id=ns_id)) as r:
-        response = await r.json()
+    links = [await link.get_attribute("href") for link in links]
+    for href in links:
+        newspaper_type = href.split('/')[2]
+        ns_id = href.split("/")[-1] # unique article identificator used for getting a request token
         
-    url = response["url"]
-    async with session.get(url, params={"h": settings.auth_token}) as resp:
-        await disk_client.upload_file(
-            resp.content,
-            disk_path=f"newspapers/{date}.pdf"
-        )
+        async with session.get(token_checker.format(ns_id=ns_id)) as r:
+            response = await r.json()
+            
+        url = response["url"]
+        
+        dir_for_paper = f"newspapers/{newspaper_type}"
+        dir_exist = await disk_client.check_entity_existence(dir_for_paper) == "dir"
+        if not dir_exist:
+            await disk_client.create_folder(dir_for_paper)
+        async with session.get(url, params={"h": settings.auth_token}) as resp:
+            await disk_client.upload_file(
+                resp.content,
+                disk_path=f"{dir_for_paper}/{date}.pdf"
+            )
     logger.info(f"processed {date}")
 
 async def load_pdf_worker(context, date_queue, load_queue, session):
@@ -93,7 +99,6 @@ async def main():
             browser = await p.chromium.launch(headless=True)
             client = YandexDiskClient(session=session_http)
             context = await browser.new_context(storage_state="cookies.json")
-            
             pdf_workers = [asyncio.create_task(load_pdf_worker(context, queue_for_load, client, session=session_http)) for _ in range(3)]
             
             await queue_for_load.join()
